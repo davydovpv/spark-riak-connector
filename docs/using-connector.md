@@ -29,14 +29,16 @@ The following import statements should be included at the top of your Spark appl
 **Scala**
 ```scala
 import org.apache.spark.{SparkContext, SparkConf}
+import org.apache.spark.sql.SparkSession
 import com.basho.riak.spark._
 ```
 **Python**
 ```python
 import pyspark
 import pyspark_riak
+import pyspark_riak.sql
 ```
-You can control how your Spark application interacts with Riak by configuring different options for your `SparkContext` or `SQLContext`. You can set these options within the $SPARK_HOME/conf/spark-default.conf.  If you don't set an option, it will be automatically set to the default values listed below.
+You can control how your Spark application interacts with Riak by configuring different options for your `SparkSession`. You can set these options within the $SPARK_HOME/conf/spark-default.conf.  If you don't set an option, it will be automatically set to the default values listed below.
 
 You can set the below options for the `SparkConf` object:
 
@@ -50,9 +52,7 @@ spark.riak.input.split.count                   | Desired minimum number of Spark
 spark.riak.write.replicas                      | Quorum value on write. Integer value or symbolic constant can be used. Possible symbolic constants are: <ul><li>all - All replicas must reply.</li><li>one - This is the same as integer value 1.</li><li>quorum - A majority of the replicas must respond, that is, “half plus one”.</li><li>default - Uses whatever the per-bucket consistency property, which may be any of the above values, or an integer.</li></ul>                                              | default | KV
 spark.riak.connections.inactivity.timeout      | Time to keep connection to Riak alive in milliseconds | 1000 | KV/TS
 spark.riakts.bindings.timestamp                | To treat/convert Riak TS timestamp columns either as a Long (UNIX milliseconds) or as a Timestamps during the automatic schema discovery. Valid values are: <ul><li>useLong</li><li>useTimestamp</li><ul> | useTimestamp | TS
-spark.riak.partitioning.ts-range-field-name    | Name of quantized field for range query       | 1                  | TS
 spark.riakts.write.bulk-size                   | Bulk size for parallel TS table writes            | 100                | TS
-spark.riak.partitioning.ts-quantum             | Size of the quantum for range field E.g.: "100s"  | N/A                | TS
 
 Example:
 
@@ -63,8 +63,12 @@ val conf = new SparkConf()
         .set("spark.riak.connection.host", "127.0.0.1:8087")
         .set("spark.riak.connections.min", "20")
         .set("spark.riak.connections.max", "50")
-
-val sc = new SparkContext("spark://127.0.0.1:7077", "test", conf)
+val sparkSession = SparkSession.builder()
+                        .master("spark://127.0.0.1:7077")
+                        .appName("test")
+                        .config(conf)
+                        .getOrCreate()
+val sc = sparkSession.sparkContext
 ```
 
 **Python**
@@ -265,16 +269,20 @@ rdd.saveToRiakTS(output_ts_table);
 
 ## Spark Dataframes With KV Bucket
 
-You can use Spark DataFrames on top of an RDD that was created from a KV Bucket. First you need to create a SQLContext from SparkContext:
+You can use Spark DataFrames on top of an RDD that was created from a KV Bucket. The entry point to programming Spark with the Dataset and DataFrame API is [SparkSession](https://spark.apache.org/docs/2.0.0/api/java/org/apache/spark/sql/SparkSession.html) 
 
 ```scala
-val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+val sparkSession = SparkSession.builder()
+     .master(...)
+     .appName(...)
+     .config(...)
+     .getOrCreate()
 ```
 
 Then import:
 
 ```scala    
-import sqlContext.implicits._
+import sparkSession.implicits._
 ```
 
 Next, you have to specify a user defined type to allow schema inference using reflection:
@@ -307,26 +315,26 @@ df.groupBy("category").count
 Alternatively, you can register a table
 
 ```scala
-df.registerTempTable("users")
+df.createOrReplaceTempView("users")
 ```
 
 and use Spark SQL queries over it.
 
 
 ```scala
-sqlContext.sql("select * from users where age >= 50")
+sparkSession.sql("select * from users where age >= 50")
 ```
 
 Another thing you can use are user defined functions (UDFs). First, you have to register a UDF.
 
 ```scala
-sqlContext.udf.register("stringLength", (s: String) => s.length)
+sparkSession.udf.register("stringLength", (s: String) => s.length)
 ```
 
 After that you can use it in SQL queries   
 
 ```scala
-sqlContext.sql("select user_id, name, stringLength(name) nameLength from users order by nameLength")
+sparkSession.sql("select user_id, name, stringLength(name) nameLength from users order by nameLength")
 ```
 When you already have a DataFrame, you can save it into Riak. To do that, make sure you have imported `com.basho.riak.spark._` so that saveToRiak() method is available.
 
@@ -353,23 +361,22 @@ To enable DataFrames functionality, first steps are
 
 **Scala**
 ```scala
-val sc = new SparkContext()
-val sqlContext = new org.apache.spark.sql.SQLContext(sc)
-import sqlContext.implicits._
+val sparkSession = val sparkSession = SparkSession.builder().getOrCreate()
+import sparkSession.implicits._
 ts_table_name = "test_table"
 ```
 **Python**
 ```python
-sc = pyspark.SparkContext(conf=conf)
-sqlContext = pyspark.SQLContext(sc)
+sparkSession = SparkSession.builder.getOrCreate()
+sc = sparkSession.sparkContext
 ts_table_name = "test_table"
 ```
 
-To read data from existing TS table `test-table` standard SQLContext means can be used by providing a special `“org.apache.spark.sql.riak”` data format and using a Riak TS range query:
+To read data from existing TS table `test-table` standard SparkSession can be used by providing a special `“org.apache.spark.sql.riak”` data format and using a Riak TS range query:
 
 **Scala**
 ```scala
-val df = sqlContext.read   
+val df = sparkSession.read   
  	.option("spark.riak.connection.hosts","riak_host_ip:10017")
   	.format("org.apache.spark.sql.riak")
   	.load(ts_table_name)
@@ -378,7 +385,7 @@ val df = sqlContext.read
 ```
 **Python**
 ```python
-df = sqlContext.read \
+df = sparkSession.read \
 	.option("spark.riak.connection.hosts","riak_host_ip:10017") \
   	.format("org.apache.spark.sql.riak") \
   	.load(ts_table_name) \
@@ -386,13 +393,7 @@ df = sqlContext.read \
   	.filter(s"time >= CAST($from AS TIMESTAMP) AND time <= CAST($to AS TIMESTAMP) AND  col1= $value1")
 ```
 
-Schema may or may not be provided using `.schema()` method. If not provided, it will be inferred. Any of the Spark Connector options can be provided in `.option()` or `.options()`. Alternatively, `org.apache.spark.sql.riak.RiakSQLContext` can be created and then queried with range query using `sql()` method
-
-**Scala**
-```scala
-val riakSqlContext = new RiakSQLContext(sc, ts_table_name)
-val alternativeDf = riakSqlContext.sql(s"SELECT time, col1 from $ts_table_name WHERE time >= CAST($from AS TIMESTAMP) AND time <= CAST($to AS TIMESTAMP) AND  col1= $value1")
-```
+Schema may or may not be provided using `.schema()` method. If not provided, it will be inferred. Any of the Spark Connector options can be provided in `.option()` or `.options()`.
 
 A DataFrame, `inputDF`, that has the same schema as an existing TS table (column order and types) can be saved to Riak TS as follows:
 
@@ -436,7 +437,10 @@ val conf = new SparkConf()
         .setAppName("My Spark Riak App")
         .set("spark.riak.input.split.count", "10")
 
-val sc = new SparkContext(conf)
+val sparkSession = SparkSession.builder()
+     .config(sparkConf)
+     .getOrCreate()
+val sc = sparkSession.sparkContext
 ...
 sc.riakBucket[UserTS](DEFAULT_NAMESPACE)
     .query2iRange(CREATION_INDEX, 100L, 200L)
@@ -482,7 +486,7 @@ val schemaWithLong = StructType(List(
       StructField(name = "temperature_k", dataType = DoubleType))
     )
 
-    val df = sqlContext.read
+    val df = sparkSession.read
       .format("org.apache.spark.sql.riak")
       .schema(newSchema)
       .load(tableName)
@@ -492,7 +496,7 @@ val schemaWithLong = StructType(List(
 You can use `spark.riakts.bindings.timestamp` and Automatic Schema Discovery with `useLong`:
 
 ```scala
-val df = sqlContext.read
+val df = sparkSession.read
       .format("org.apache.spark.sql.riak")
       .option("spark.riakts.bindings.timestamp", "useLong")
       .load(tableName)
@@ -503,7 +507,7 @@ In the previous example, the query times, `queryFromMillis` and `queryToMillis`,
 Or, you can use `spark.riakts.bindings.timestamp` and Automatic Schema Discovery with `useTimestamp`:
 
 ```scala
-val df = sqlContext.read
+val df = sparkSession.read
       .format("org.apache.spark.sql.riak")
       .option("spark.riakts.bindings.timestamp", "useTimestamp")
       .load(tableName)
@@ -529,16 +533,14 @@ NOTE: All data from each subrange will be loaded at once. Paginated reads are no
 Large ranges can be automatically split into smaller sub-ranges at partitioning time without taking into account data location by simply dividing the initial range into a number of partitions.
 
 To use this functionality it's required to provide the following options:
-* `spark.riak.partitioning.ts-range-field-name` to identify quantized field
 * `spark.riak.input.split.count` to identify number of partitions/subranges (default value is `10`)
 
 For example:
 
 **Scala**
 ```scala
-   val df = sqlContext.read
+   val df = sparkSession.read
       .option("spark.riak.input.split.count", "5")
-      .option("spark.riak.partitioning.ts-range-field-name", "time")
       .format("org.apache.spark.sql.riak")
       .schema(schema)
       .load(ts_table_name)
@@ -546,9 +548,8 @@ For example:
 ```
 **Python**
 ```python
-df = sqlContext.read \
+df = sparkSession.read \
       .option("spark.riak.input.split.count", "5") \
-      .option("spark.riak.partitioning.ts-range-field-name", "time") \
       .format("org.apache.spark.sql.riak") \
       .schema(schema) \
       .load(ts_table_name) \
@@ -563,26 +564,21 @@ The initial range query will be split into 5 subqueries (one per each partition)
 * ```time >= CAST(130000 AS TIMESTAMP) AND time < CAST(170000 AS TIMESTAMP) AND col1 = 'val1'```
 * ```time >= CAST(170000 AS TIMESTAMP) AND time < CAST(210000 AS TIMESTAMP) AND col1 = 'val1'```
 
-An additional option spark.riak.partitioning.ts-quantum can be passed to notify the Spark-Riak Connector of the quantum size. If the automatically created subranges break the 5 quanta limitation, the initial range will be split into ~4 quantum subranges and the resulting subranges will then be grouped to form the required number of partitions.
 **Scala**
 ```scala
-   val df = sqlContext.read
+   val df = sparkSession.read
       .option("spark.riak.input.split.count", "5")
-      .option("spark.riak.partitioning.ts-range-field-name", tsRangeFieldName)
-      .option("spark.riak.partitioning.ts-quantum", "5s")
       .format("org.apache.spark.sql.riak")
-      .schema(schema)
+      .schema(RiakStructType(schema, 5000L, tsRangeFieldName))
       .load(ts_table_name)
       .filter(s"time >= CAST(10000 AS TIMESTAMP) AND time < CAST(210000 AS TIMESTAMP) AND col1 = 'val1'")
 ```
 **Python**
 ```python
-df = sqlContext.read \
+df = sparkSession.read \
       .option("spark.riak.input.split.count", "5") \
-      .option("spark.riak.partitioning.ts-range-field-name", tsRangeFieldName) \
-      .option("spark.riak.partitioning.ts-quantum", "5s") \
       .format("org.apache.spark.sql.riak")
-      .schema(schema) \
+      .schema(RiakStructType(schema, 5000L, tsRangeFieldName)) \
       .load(ts_table_name) \
       .filter(s"time >= CAST(10000 AS TIMESTAMP) AND time < CAST(210000 AS TIMESTAMP) AND col1 = 'val1'")
 
@@ -594,8 +590,6 @@ In this case, the initial range will be spit into 5 sets of 2 subranges:
 * ```[(time >= 90000 AND time < 110000), (time >= 110000 AND time < 130000)]```
 * ```[(time >= 130000 AND time < 150000), (time >= 150000 AND time < 170000)]```
 * ```[(time >= 170000 AND time < 190000), (time >= 190000 AND time < 210000)]```
-
-Not providing the `spark.riak.partitioning.ts-range-field-name` property will default to having a single partition with initial query.
 
 NOTE: All data from each subrange will be loaded at once. Paginated reads are not yet implemented.
 
@@ -616,7 +610,7 @@ Or you can set the `spark.riakts.write.bulk-size` property in the DataFrame's `.
 
 **Scala**
 ```scala
-val df = sqlContext.write
+val df = sparkSession.write
 	.option("spark.riakts.write.bulk-size", "500")
       	.format("org.apache.spark.sql.riak")
       	.mode(SaveMode.Append)
@@ -624,7 +618,7 @@ val df = sqlContext.write
 ```
 **Python**
 ```python
-df = sqlContext.write
+df = sparkSession.write
 	.option("spark.riakts.write.bulk-size", "500")
       	.format("org.apache.spark.sql.riak")
       	.mode(SaveMode.Append)
@@ -637,7 +631,7 @@ Bulks will be written in parallel. The number of parallel writes for each partit
 ```scala
 val conf = new SparkConf()
 	.set("spark.riakts.write.bulk-size", "500")
-        .set("spark.riak.connections.min", "50")
+    .set("spark.riak.connections.min", "50")
 ```
 **Python**
 ```python

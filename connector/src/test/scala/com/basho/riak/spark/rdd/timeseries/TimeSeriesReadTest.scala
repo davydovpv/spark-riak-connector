@@ -20,7 +20,7 @@ package com.basho.riak.spark.rdd.timeseries
 import com.basho.riak.spark.rdd.RiakTSTests
 import com.basho.riak.spark.toSparkContextFunctions
 import org.apache.spark.SparkException
-import org.apache.spark.sql.SQLContext
+import org.apache.spark.riak.types.RiakStructType
 import org.apache.spark.sql.functions.udf
 import org.apache.spark.sql.types._
 import org.junit.Assert.assertEquals
@@ -32,6 +32,7 @@ import org.junit.experimental.categories.Category
   */
 @Category(Array(classOf[RiakTSTests]))
 class TimeSeriesReadTest extends AbstractTimeSeriesTest {
+  import sparkSession.implicits._
 
   @Test
   def readDataAsSqlRow(): Unit = {
@@ -56,17 +57,14 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
   // TODO: Consider possibility of moving this case to the SparkDataframesTest
   @Test
   def riakTSRDDToDataFrame(): Unit = {
-    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
-    import sqlContext.implicits._
-
     val df = sc.riakTSTable[org.apache.spark.sql.Row](bucketName)
       .sql(s"SELECT time, user_id, temperature_k FROM $bucketName $sqlWhereClause")
       .map(r => TimeSeriesData(r.getTimestamp(0).getTime, r.getString(1), r.getDouble(2)))
       .toDF()
 
-    df.registerTempTable("test")
+    df.createTempView("test")
 
-    val data = sqlContext.sql("select * from test").toJSON.collect()
+    val data = sparkSession.sql("select * from test").toJSON.collect()
 
     // -- verification
     assertEqualsUsingJSONIgnoreOrder(
@@ -83,9 +81,6 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
   @Test
   def riakTSRDDToDataFrameConvertTimestamp(): Unit = {
-    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
-    import sqlContext.implicits._
-
     val structType = StructType(List(
       StructField(name = "time", dataType = LongType),
       StructField(name = "user_id", dataType = StringType),
@@ -97,9 +92,9 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
       .map(r => TimeSeriesData(r.getLong(0), r.getString(1), r.getDouble(2)))
       .toDF()
 
-    df.registerTempTable("test")
+    df.createTempView("test")
 
-    val data = sqlContext.sql("select * from test").toJSON.collect()
+    val data = sparkSession.sql("select * from test").toJSON.collect()
 
     // -- verification
     assertEqualsUsingJSONIgnoreOrder(
@@ -131,14 +126,11 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
   @Test
   def dataFrameGenericLoad(): Unit = {
-    val sqlContext = new SQLContext(sc)
-    sqlContext.udf.register("getMillis", getMillis) // transforms timestamp to not deal with timezones
-
-    import sqlContext.implicits._
+    sparkSession.udf.register("getMillis", getMillis) // transforms timestamp to not deal with timezones
 
     val udfGetMillis = udf(getMillis)
 
-    val df = sqlContext.read
+    val df = sparkSession.read
       .format("org.apache.spark.sql.riak")
       // For real usage no need to provide schema manually
       .schema(schema)
@@ -164,10 +156,6 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
   @Test
   def dataFrameReadShouldConvertTimestampToLong(): Unit = {
-    val sqlContext = new SQLContext(sc)
-
-    import sqlContext.implicits._
-
     val newSchema = StructType(List(
       StructField(name = "surrogate_key", dataType = LongType),
       StructField(name = "family", dataType = StringType),
@@ -176,10 +164,10 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
       StructField(name = "temperature_k", dataType = DoubleType))
     )
 
-    val df = sqlContext.read
+    val df = sparkSession.read
       .option("spark.riak.partitioning.ts-range-field-name", "time")
       .format("org.apache.spark.sql.riak")
-      .schema(newSchema)
+      .schema(RiakStructType(newSchema, "time"))
       .load(bucketName)
       .filter(s"time >= $queryFromMillis AND time <= $queryToMillis AND surrogate_key = 1 AND family = 'f'")
       .select($"time", $"family", $"surrogate_key", $"user_id", $"temperature_k")
@@ -206,23 +194,19 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
     expectedException.expect(classOf[SparkException])
     expectedException.expectMessage("Provided schema contains fields that are not returned by query: unknown_field")
 
-    val structType = StructType(List(
+    val structFields = List(
       StructField(name = "surrogate_key", dataType = LongType),
       StructField(name = "family", dataType = StringType),
       StructField(name = "time", dataType = LongType),
       StructField(name = "user_id", dataType = StringType),
       StructField(name = "temperature_k", dataType = DoubleType),
       StructField(name = "unknown_field", dataType = StringType))
-    )
 
-    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
 
-    import sqlContext.implicits._
-
-    sqlContext.read
+    sparkSession.read
       .option("spark.riak.partitioning.ts-range-field-name", "time")
       .format("org.apache.spark.sql.riak")
-      .schema(structType)
+      .schema(RiakStructType(structFields, "time"))
       .load(bucketName)
       .filter(s"time >= $queryFromMillis AND time <= $queryToMillis AND surrogate_key = 1 AND family = 'f'")
       .select($"time", $"family", $"surrogate_key", $"user_id", $"temperature_k")
@@ -231,15 +215,13 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
   @Test
   def sqlReadSingleFieldShouldPass(): Unit = {
-    val sqlContext = new SQLContext(sc)
-
-    sqlContext.read
+    sparkSession.read
       .option("spark.riak.partitioning.ts-range-field-name", "time")
       .format("org.apache.spark.sql.riak")
       .load(bucketName)
-      .registerTempTable("test")
+      .createTempView("test")
 
-    val data = sqlContext
+    val data = sparkSession
       .sql(
         s"""
            | SELECT user_id
@@ -263,9 +245,6 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
   @Test
   def readColumnsWithoutSchema(): Unit = {
-    val sqlContext = new SQLContext(sc)
-    import sqlContext.implicits._
-
     val rdd = sc.riakTSTable[org.apache.spark.sql.Row](bucketName)
       .select("time", "user_id", "temperature_k")
       .where(s"time >= $queryFromMillis AND time <= $queryToMillis AND surrogate_key = 1 AND family = 'f'")
@@ -286,9 +265,6 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
   @Test
   def readColumnsWithSchema(): Unit = {
-    val sqlContext = new SQLContext(sc)
-    import sqlContext.implicits._
-
     val structType = StructType(List(
       StructField(name = "time", dataType = LongType),
       StructField(name = "user_id", dataType = StringType),
@@ -367,9 +343,6 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
   @Test
   def readBySchemaWithoutDefinedColumns(): Unit = {
-    val sqlContext = new SQLContext(sc)
-    import sqlContext.implicits._
-
     val structType = StructType(List(
       StructField(name = "time", dataType = LongType),
       StructField(name = "user_id", dataType = StringType),
@@ -414,14 +387,11 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
   @Test
   def dataFrameReadShouldHandleTimestampAsLong(): Unit = {
-    val sqlContext = new SQLContext(sc)
 
-    import sqlContext.implicits._
 
-    val df = sqlContext.read
+    val df = sparkSession.read
       .format("org.apache.spark.sql.riak")
       .option("spark.riakts.bindings.timestamp", "useLong")
-      .option("spark.riak.partitioning.ts-range-field-name", "time")
       .load(bucketName)
 
     assertEquals(LongType, df.schema("time").dataType)
@@ -447,21 +417,18 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
 
 @Category(Array(classOf[RiakTSTests]))
 class TimeSeriesReadWithoutSchemaTest extends AbstractTimeSeriesTest {
+  import sparkSession.implicits._
 
   @Test
   def riakTSRDDToDataFrame(): Unit = {
-    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
-
-    import sqlContext.implicits._
-
     val df = sc.riakTSTable[org.apache.spark.sql.Row](bucketName)
       .sql(s"SELECT time, user_id, temperature_k FROM $bucketName $sqlWhereClause")
       .map(r => TimeSeriesData(r.getTimestamp(0).getTime, r.getString(1), r.getDouble(2)))
       .toDF()
 
-    df.registerTempTable("test")
+    df.createTempView("test")
 
-    val data = sqlContext.sql("select * from test").toJSON.collect()
+    val data = sparkSession.sql("select * from test").toJSON.collect()
 
     // -- verification
     assertEqualsUsingJSONIgnoreOrder(
@@ -478,14 +445,11 @@ class TimeSeriesReadWithoutSchemaTest extends AbstractTimeSeriesTest {
 
   @Test
   def dataFrameReadShouldHandleTimestampAsTimestamp(): Unit = {
-    val sqlContext = new SQLContext(sc)
-    sqlContext.udf.register("getMillis", getMillis) // transforms timestamp to not deal with timezones
 
-    import sqlContext.implicits._
-
+    sparkSession.udf.register("getMillis", getMillis) // transforms timestamp to not deal with timezones
     val udfGetMillis = udf(getMillis)
 
-    val df = sqlContext.read
+    val df = sparkSession.read
       .format("org.apache.spark.sql.riak")
       .option("spark.riakts.bindings.timestamp", "useTimestamp")
       .load(bucketName)

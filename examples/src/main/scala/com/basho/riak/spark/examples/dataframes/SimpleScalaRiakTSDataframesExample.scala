@@ -21,7 +21,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 
 import org.apache.spark.SparkConf
-import org.apache.spark.SparkContext
+import org.apache.spark.sql.{SaveMode, SparkSession}
+import org.apache.spark.riak.types.RiakStructType
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.types.DoubleType
 import org.apache.spark.sql.types.LongType
@@ -63,13 +64,13 @@ object SimpleScalaRiakTSDataframesExample {
     StructField(name = "humidity", dataType = DoubleType),
     StructField(name = "pressure", dataType = DoubleType)))
 
-  val schemaWithLong = StructType(List(
+  val structFields = List(
     StructField(name = "weather", dataType = StringType),
     StructField(name = "family", dataType = StringType),
     StructField(name = "time", dataType = LongType),
     StructField(name = "temperature", dataType = DoubleType),
     StructField(name = "humidity", dataType = DoubleType),
-    StructField(name = "pressure", dataType = DoubleType)))
+    StructField(name = "pressure", dataType = DoubleType))
 
   def main(args: Array[String]) {
     val sparkConf = new SparkConf().setAppName("Riak TS Spark Dataframes Example")
@@ -77,15 +78,15 @@ object SimpleScalaRiakTSDataframesExample {
     setSparkOpt(sparkConf, "spark.master", "local")
     setSparkOpt(sparkConf, "spark.riak.connection.host", "127.0.0.1:8087")
 
-    val sc = new SparkContext(sparkConf)
+    val sparkSession = SparkSession.builder().config(sparkConf).getOrCreate()
+    val sc = sparkSession.sparkContext
 
-    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
-    import sqlContext.implicits._
+    import sparkSession.implicits._
 
     // Load test data from json file
     println("---------------------------------- input data -----------------------------------")
     val inputRDD = sc.parallelize(testData.split("\n"))
-    val inputDF = sqlContext.read.json(inputRDD)
+    val inputDF = sparkSession.read.json(inputRDD)
       .withColumn("time", 'time.cast("Timestamp")) // Timestamp types are not inferred when reading from JSON and need to be cast
       .select("weather", "family", "time", "temperature", "humidity", "pressure") // column ordering should be the same as in schema
     inputDF.printSchema
@@ -107,7 +108,7 @@ object SimpleScalaRiakTSDataframesExample {
 
     // Simple Riak range query with schema provided
     println("---------------------- Range query with provided schema -------------------------")
-    val withSchemaProvided = sqlContext.read
+    val withSchemaProvided = sparkSession.read
       .format("org.apache.spark.sql.riak")
       .schema(schemaWithTimestamp)
       .load(tableName)
@@ -117,28 +118,30 @@ object SimpleScalaRiakTSDataframesExample {
 
     // Simple Riak range query with schema provided and automatic timestamp to long conversion
     println("---Range query with provided schema and automatic timestamp to long conversion ---")
-    val withSchemaProvidedLongTime = sqlContext.read
+    val withSchemaProvidedLongTime = sparkSession.read
       .option("spark.riak.partitioning.ts-range-field-name", "time")
       .format("org.apache.spark.sql.riak")
-      .schema(schemaWithLong)
+      .schema(RiakStructType(structFields, "time"))
       .load(tableName)
       .filter(s"time >= $fromMillis AND time <= $toMillis AND  weather = 'sunny' AND family = 'f'")
     withSchemaProvidedLongTime.printSchema
     withSchemaProvidedLongTime.show
 
     // Simple Riak range query without providing schema
+    //FIXME: need to check if it works fine without schema
     println("-------------------- Range query with inferred schema ---------------------------")
-    val df = sqlContext.read
+    val df = sparkSession.read
       .option("spark.riak.partitioning.ts-range-field-name", "time")
       .format("org.apache.spark.sql.riak")
       .load(tableName)
       .filter(s"time >= CAST('$from' AS TIMESTAMP) AND time <= CAST('$to' AS TIMESTAMP) AND  weather = 'sunny' AND family = 'f'")
     df.printSchema
     df.show
-    
+
+    //FIXME: need to check if it works fine without schema
     // Simple Riak range query without providing schema and with useLong option for timestamp binding
     println("------ Range query with inferred schema and treating timestamps as Long (in milliseconds) ---------")
-    val dfUseLong = sqlContext.read
+    val dfUseLong = sparkSession.read
       .option("spark.riak.partitioning.ts-range-field-name", "time")
       .option("spark.riakts.bindings.timestamp", "useLong") // option to treat timestamps as Longs
       .format("org.apache.spark.sql.riak")

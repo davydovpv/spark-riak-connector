@@ -19,9 +19,9 @@ package com.basho.riak.spark.rdd.timeseries;
 
 import com.basho.riak.spark.rdd.RiakTSTests;
 import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.riak.types.RiakStructType;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.SQLContext;
 import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.functions;
 import org.apache.spark.sql.types.DataTypes;
@@ -29,9 +29,14 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
+import scala.None$;
+import scala.Option;
+import scala.Some$;
 import scala.collection.Seq;
 
 import java.sql.Timestamp;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -64,17 +69,16 @@ public class TimeSeriesJavaReadTest extends AbstractJavaTimeSeriesTest {
 
     @Test
     public void riakTSRDDToDataFrame() {
-        SQLContext sqlContext = new SQLContext(jsc);
         JavaRDD<TimeSeriesDataBean> rows = javaFunctions(jsc)
                 .riakTSTable(bucketName(), Row.class)
                 .sql(String.format("SELECT time, user_id, temperature_k FROM %s %s", bucketName(), sqlWhereClause()))
                 .map(r -> new TimeSeriesDataBean(r.getTimestamp(0).getTime(), r.getString(1), r.getDouble(2)));
 
-        Dataset<Row> df = sqlContext.createDataFrame(rows, TimeSeriesDataBean.class);
-        df.registerTempTable("test");
+        Dataset<Row> df = sparkSession().createDataFrame(rows, TimeSeriesDataBean.class);
+        df.createOrReplaceTempView("test");
 
         // Explicit cast due to compilation error "Object cannot be converted to java.lang.String[]"
-        String[] data = (String[]) sqlContext.sql("select * from test").toJSON().collect();
+        String[] data = (String[]) sparkSession().sql("select * from test").toJSON().collect();
         assertEqualsUsingJSONIgnoreOrder("[" +
                 "{time:111111, user_id:'bryce', temperature_k:305.37}," +
                 "{time:111222, user_id:'bryce', temperature_k:300.12}," +
@@ -92,17 +96,16 @@ public class TimeSeriesJavaReadTest extends AbstractJavaTimeSeriesTest {
                 DataTypes.createStructField("temperature_k", DataTypes.DoubleType, true),
         });
 
-        SQLContext sqlContext = new SQLContext(jsc);
         JavaRDD<TimeSeriesDataBean> rows = javaFunctions(jsc)
                 .riakTSTable(bucketName(), structType, Row.class)
                 .sql(String.format("SELECT time, user_id, temperature_k FROM %s %s", bucketName(), sqlWhereClause()))
                 .map(r -> new TimeSeriesDataBean(r.getLong(0), r.getString(1), r.getDouble(2)));
 
-        Dataset<Row> df = sqlContext.createDataFrame(rows, TimeSeriesDataBean.class);
-        df.registerTempTable("test");
+        Dataset<Row> df = sparkSession().createDataFrame(rows, TimeSeriesDataBean.class);
+        df.createOrReplaceTempView("test");
 
         // Explicit cast due to compilation error "Object cannot be converted to java.lang.String[]"
-        String[] data = (String[]) sqlContext.sql("select * from test").toJSON().collect();
+        String[] data = (String[]) sparkSession().sql("select * from test").toJSON().collect();
         assertEqualsUsingJSONIgnoreOrder("[" +
                 "{time:111111, user_id:'bryce', temperature_k:305.37}," +
                 "{time:111222, user_id:'bryce', temperature_k:300.12}," +
@@ -114,11 +117,9 @@ public class TimeSeriesJavaReadTest extends AbstractJavaTimeSeriesTest {
 
     @Test
     public void dataFrameGenericLoad() {
-        SQLContext sqlContext = new SQLContext(jsc);
+        sparkSession().udf().register("getMillis", (UDF1<Timestamp, Object>) Timestamp::getTime, DataTypes.LongType);
 
-        sqlContext.udf().register("getMillis", (UDF1<Timestamp, Object>) Timestamp::getTime, DataTypes.LongType);
-
-        Dataset<Row> df = sqlContext.read()
+        Dataset<Row> df = sparkSession().read()
                 .format("org.apache.spark.sql.riak")
                 .schema(schema())
                 .load(bucketName())
@@ -138,20 +139,18 @@ public class TimeSeriesJavaReadTest extends AbstractJavaTimeSeriesTest {
 
     @Test
     public void dataFrameReadShouldConvertTimestampToLong() {
-        SQLContext sqlContext = new SQLContext(jsc);
-
-        StructType structType = new StructType(new StructField[]{
+        StructField[] structFields = {
                 DataTypes.createStructField("surrogate_key", DataTypes.LongType, true),
                 DataTypes.createStructField("family", DataTypes.StringType, true),
                 DataTypes.createStructField("time", DataTypes.LongType, true),
                 DataTypes.createStructField("user_id", DataTypes.StringType, true),
                 DataTypes.createStructField("temperature_k", DataTypes.DoubleType, true),
-        });
+        };
 
-        Dataset<Row> df = sqlContext.read()
+        Dataset<Row> df = sparkSession().read()
                 .option("spark.riak.partitioning.ts-range-field-name", "time")
                 .format("org.apache.spark.sql.riak")
-                .schema(structType)
+                .schema(new RiakStructType(structFields, scala.Option.empty(), scala.Option.apply("time")))
                 .load(bucketName())
                 .filter(String.format("time >= %s AND time <= %s AND surrogate_key = 1 AND family = 'f'", queryFromMillis(), queryToMillis()));
         df = df.select(df.col("time"), df.col("family"), df.col("surrogate_key"), df.col("user_id"), df.col("temperature_k"));
@@ -169,12 +168,9 @@ public class TimeSeriesJavaReadTest extends AbstractJavaTimeSeriesTest {
 
     @Test
     public void dataFrameReadShouldHandleTimestampAsLong() {
-        SQLContext sqlContext = new SQLContext(jsc);
-
-        Dataset<Row> df = sqlContext.read()
+        Dataset<Row> df = sparkSession().read()
                 .format("org.apache.spark.sql.riak")
                 .option("spark.riakts.bindings.timestamp", "useLong")
-                .option("spark.riak.partitioning.ts-range-field-name", "time")
                 .load(bucketName())
                 .filter(String.format("time > %s AND time < %s AND surrogate_key = 1 AND family = 'f'", queryFromMillis(), queryToMillis()));
         df = df.select(df.col("time"), df.col("family"), df.col("surrogate_key"), df.col("user_id"), df.col("temperature_k"));
