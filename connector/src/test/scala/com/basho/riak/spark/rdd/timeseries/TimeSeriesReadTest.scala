@@ -202,7 +202,6 @@ class TimeSeriesReadTest extends AbstractTimeSeriesTest {
       StructField(name = "temperature_k", dataType = DoubleType),
       StructField(name = "unknown_field", dataType = StringType))
 
-
     sparkSession.read
       .option("spark.riak.partitioning.ts-range-field-name", "time")
       .format("org.apache.spark.sql.riak")

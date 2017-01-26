@@ -29,14 +29,9 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import scala.None$;
-import scala.Option;
-import scala.Some$;
 import scala.collection.Seq;
 
 import java.sql.Timestamp;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
